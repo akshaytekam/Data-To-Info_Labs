@@ -1,0 +1,61 @@
+-- Create a Virtual Warehouse
+CREATE or REPLACE WAREHOUSE my_warehouse 
+  WITH WAREHOUSE_SIZE = 'XSMALL' 
+  AUTO_SUSPEND = 60 
+  AUTO_RESUME = TRUE;
+
+-- Create a Database and Schema
+CREATE or REPLACE DATABASE demo_db;
+USE DATABASE demo_db;
+
+CREATE or REPLACE SCHEMA demo_schema;
+USE SCHEMA demo_schema;
+
+-- Create a Table in Snowflake
+CREATE OR REPLACE TABLE employees (
+    emp_id INT,
+    first_name STRING,
+    last_name STRING,
+    department STRING,
+    salary NUMBER,
+    hire_date DATE
+);
+
+-- create a file format
+CREATE OR REPLACE FILE FORMAT my_csv_format
+  TYPE = 'CSV'
+  FIELD_DELIMITER = ','
+  SKIP_HEADER = 1
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  TRIM_SPACE = TRUE
+  EMPTY_FIELD_AS_NULL = TRUE
+  COMPRESSION = 'AUTO';
+
+
+-- Query the Data
+SELECT * FROM employees;
+
+SELECT * FROM employees where department = 'IT';
+
+SELECT AVG(salary) AS average_salary FROM employees;
+
+SELECT department, COUNT(*) AS total_employees
+FROM employees
+GROUP BY department;
+
+SELECT * FROM employees
+ORDER BY salary DESC
+LIMIT 1;
+
+SELECT *
+FROM (
+    SELECT *, DENSE_RANK() OVER (ORDER BY salary DESC) AS salary_rank
+    FROM employees
+) ranked_employees
+where salary_rank IN (2);
+
+-- If you want to delete everything created for this demo:
+DROP TABLE employees;
+DROP SCHEMA demo_schema;
+DROP DATABASE demo_db;
+DROP WAREHOUSE my_warehouse;
