@@ -1,0 +1,238 @@
+-- Create a Database and Schema
+CREATE or REPLACE DATABASE demo_db;
+USE DATABASE demo_db;
+
+CREATE or REPLACE SCHEMA demo_schema;
+USE SCHEMA demo_schema;
+
+-- create a file format
+CREATE OR REPLACE FILE FORMAT my_csv_format
+  TYPE = 'CSV'
+  FIELD_DELIMITER = ','
+  SKIP_HEADER = 1
+  FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+  TRIM_SPACE = TRUE
+  EMPTY_FIELD_AS_NULL = TRUE
+  COMPRESSION = 'AUTO';
+
+-- create staging table
+CREATE OR REPLACE TABLE staging_customers (
+  cust_id STRING,
+  full_name STRING,
+  email STRING,
+  signup_dt STRING,
+  age STRING,
+  status STRING
+);
+
+SHOW STAGES;
+
+-- Load your CSV file into this staging table
+COPY INTO staging_customers
+FROM @"DEMO_DB"."DEMO_SCHEMA"."MY_STAGE"/customers.csv
+FILE_FORMAT = my_csv_format;
+
+SELECT * FROM staging_customers;
+
+-- Create the clean final destination table with appropriate data types:
+CREATE OR REPLACE TABLE clean_customers (
+  customer_id INT,
+  name STRING,
+  email STRING,
+  signup_date DATE,
+  age INT,
+  is_active BOOLEAN
+);
+
+-- Now use a INSERT INTO ... SELECT query to clean the data while transferring:
+INSERT INTO clean_customers
+SELECT
+  TRY_TO_NUMBER(cust_id) AS customer_id,
+  INITCAP(full_name) AS name,
+  LOWER(email) AS email,
+  TRY_TO_DATE(signup_dt, 'YYYY-MM-DD') AS signup_date,
+  TRY_TO_NUMBER(age) AS age,
+  CASE 
+    WHEN LOWER(status) = 'active' THEN TRUE
+    ELSE FALSE
+  END AS is_active
+FROM staging_customers
+WHERE
+  cust_id IS NOT NULL
+  AND full_name IS NOT NULL
+  AND email IS NOT NULL
+  AND signup_dt IS NOT NULL
+  AND age IS NOT NULL;
+
+
+-- check cleaned data
+SELECT * FROM clean_customers;
+
+
+-- Insert duplicate records into staging_customers
+INSERT INTO staging_customers (cust_id, full_name, email, signup_dt, age, status) VALUES
+(101, 'John Doe', 'john.doe@example.com', '2021-06-01', '30', 'active'),
+(101, 'John Doe', 'john.doe@example.com', '2021-06-15', '30', 'active'),  -- Duplicate cust_id with newer date
+(102, 'Jane Smith', 'jane.smith@example.com', '2021-07-01', '28', 'inactive'),
+(102, 'Jane Smith', 'jane.smith@example.com', '2021-07-10', '28', 'inactive'),  -- Duplicate cust_id
+(103, 'Bob Stone', 'bob.stone@example.com', '2021-08-05', '45', 'active');
+
+
+SELECT * FROM staging_customers;
+
+-- Removing Duplicates:
+SELECT
+    cust_id,
+    full_name,
+    email,
+    signup_dt,
+    age,
+    status,
+    ROW_NUMBER() OVER (PARTITION BY cust_id ORDER BY signup_dt DESC) AS row_num
+FROM staging_customers;
+
+-- remove using cets
+WITH ranked AS (
+    SELECT
+        cust_id,
+        full_name,
+        email,
+        signup_dt,
+        age,
+        status,
+        ROW_NUMBER() OVER (PARTITION BY cust_id ORDER BY signup_dt DESC) AS row_num
+    FROM staging_customers
+)
+SELECT *
+FROM ranked
+WHERE row_num = 1;
+
+-- Use Aggregate functions to summarize data
+SELECT COUNT(*) AS total_records
+FROM clean_customers;
+
+SELECT status, COUNT(*) AS total_customers
+FROM staging_customers
+GROUP BY status;
+
+-- Average Age of Customers
+SELECT AVG(TRY_TO_NUMBER(age)) AS avg_age
+FROM staging_customers;
+
+-- Minimum and Maximum Signup Date
+SELECT 
+    MIN(TRY_TO_DATE(signup_dt, 'YYYY-MM-DD')) AS earliest_signup,
+    MAX(TRY_TO_DATE(signup_dt, 'YYYY-MM-DD')) AS latest_signup
+FROM staging_customers;
+
+-- Number of Customers per Year
+SELECT 
+    YEAR(TRY_TO_DATE(signup_dt, 'YYYY-MM-DD')) AS signup_year,
+    COUNT(*) AS total_customers
+FROM staging_customers
+WHERE signup_dt IS NOT NULL
+GROUP BY signup_year
+ORDER BY signup_year;
+
+-- Count of Null Values in Each Column
+SELECT
+    SUM(CASE WHEN cust_id IS NULL THEN 1 ELSE 0 END) AS null_cust_id,
+    SUM(CASE WHEN full_name IS NULL THEN 1 ELSE 0 END) AS null_full_name,
+    SUM(CASE WHEN email IS NULL THEN 1 ELSE 0 END) AS null_email,
+    SUM(CASE WHEN signup_dt IS NULL THEN 1 ELSE 0 END) AS null_signup_dt,
+    SUM(CASE WHEN age IS NULL THEN 1 ELSE 0 END) AS null_age,
+    SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS null_status
+FROM staging_customers;
+
+-- Pivoting converts row values into columns.
+-- For example, let’s count customers by status for each signup year.
+SELECT *
+FROM (
+    SELECT 
+        YEAR(TRY_TO_DATE(signup_dt, 'YYYY-MM-DD')) AS signup_year,
+        status
+    FROM staging_customers
+    WHERE signup_dt IS NOT NULL
+) 
+PIVOT (
+    COUNT(*) FOR status IN ('active', 'inactive', 'pending')
+) AS p;
+
+-- Create a Materialized View
+CREATE OR REPLACE MATERIALIZED VIEW mv_clean_customers AS
+SELECT
+    TRY_TO_NUMBER(cust_id) AS customer_id,
+    INITCAP(full_name) AS name,
+    LOWER(email) AS email,
+    TRY_TO_DATE(signup_dt, 'YYYY-MM-DD') AS signup_date,
+    TRY_TO_NUMBER(age) AS age,
+    CASE 
+        WHEN LOWER(status) = 'active' THEN TRUE ELSE FALSE
+    END AS is_active
+FROM staging_customers;
+
+SELECT * FROM mv_clean_customers;   -- Precomputed, faster
+
+-- UDFs
+-- Create a SQL UDF to Clean Status
+CREATE OR REPLACE FUNCTION normalize_status(input STRING)
+RETURNS STRING
+AS
+$$
+    TRIM(LOWER(input))
+$$;
+
+SELECT normalize_status(status) FROM staging_customers;
+
+-- QUERY_HISTORY: Track Past Queries
+SELECT *
+FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
+ORDER BY START_TIME DESC
+LIMIT 10;
+
+-- How to use Snowflake Streams and Tasks:
+-- Create a Stream on the Staging Table
+CREATE OR REPLACE STREAM staging_customers_stream
+ON TABLE staging_customers
+SHOW_INITIAL_ROWS = TRUE;
+
+-- Check Stream Data
+SELECT * FROM staging_customers_stream;
+
+-- Create a Task to Process Incremental Data
+-- Suppose we want to move new rows from staging to clean_customers using the stream:
+CREATE OR REPLACE TASK task_load_clean_customers
+WAREHOUSE = compute_wh
+SCHEDULE = '5 MINUTE'
+AS
+INSERT INTO clean_customers
+SELECT
+    TRY_TO_NUMBER(cust_id),
+    INITCAP(full_name),
+    LOWER(email),
+    TRY_TO_DATE(signup_dt, 'YYYY-MM-DD'),
+    TRY_TO_NUMBER(age),
+    CASE WHEN LOWER(status) = 'active' THEN TRUE ELSE FALSE END
+FROM staging_customers_stream
+WHERE METADATA$ACTION = 'INSERT';
+
+-- Start the Task
+ALTER TASK task_load_clean_customers RESUME;
+
+-- View Task Status
+SHOW TASKS;
+SHOW STREAMS;
+
+-- If you want to pause a running task:
+ALTER TASK task_load_clean_customers SUSPEND;
+
+-- If you no longer need the task:
+DROP TASK IF EXISTS task_load_clean_customers;
+
+-- Stop or Remove a Stream
+DROP STREAM IF EXISTS staging_customers_stream;
+
+-- If you want to delete everything created for this demo:
+DROP TABLE staging_customers;
+DROP SCHEMA demo_schema;
+DROP DATABASE demo_db;
